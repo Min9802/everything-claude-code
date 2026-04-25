@@ -97,6 +97,7 @@ function runTests() {
       assert.ok(fs.existsSync(path.join(claudeRoot, 'rules', 'typescript', 'testing.md')));
       assert.ok(fs.existsSync(path.join(claudeRoot, 'commands', 'plan.md')));
       assert.ok(fs.existsSync(path.join(claudeRoot, 'scripts', 'hooks', 'session-end.js')));
+      assert.ok(fs.existsSync(path.join(claudeRoot, 'scripts', 'hooks', 'run-with-flags-shell.sh')));
       assert.ok(fs.existsSync(path.join(claudeRoot, 'scripts', 'lib', 'utils.js')));
       assert.ok(fs.existsSync(path.join(claudeRoot, 'skills', 'tdd-workflow', 'SKILL.md')));
       assert.ok(fs.existsSync(path.join(claudeRoot, 'skills', 'coding-standards', 'SKILL.md')));
@@ -110,12 +111,97 @@ function runTests() {
       assert.deepStrictEqual(state.request.modules, []);
       assert.ok(state.resolution.selectedModules.includes('rules-core'));
       assert.ok(state.resolution.selectedModules.includes('framework-language'));
+      const installedShellWrapper = fs.readFileSync(path.join(claudeRoot, 'scripts', 'hooks', 'run-with-flags-shell.sh'), 'utf8');
+      assert.ok(!installedShellWrapper.includes('\r'), 'Installed shell wrapper should be normalized to LF line endings');
       assert.ok(
         state.operations.some(operation => (
           operation.destinationPath === path.join(claudeRoot, 'rules', 'common', 'coding-style.md')
         )),
         'Should record common rule file operation'
       );
+    } finally {
+      cleanup(homeDir);
+      cleanup(projectDir);
+    }
+  })) passed++; else failed++;
+
+  if (test('mirrors Claude hooks into existing VS Code agent plugin cache copies', () => {
+    const homeDir = createTempDir('install-apply-home-');
+    const projectDir = createTempDir('install-apply-project-');
+
+    try {
+      const cachedHooksPath = path.join(
+        homeDir,
+        '.vscode',
+        'agent-plugins',
+        'github.com',
+        'affaan-m',
+        'everything-claude-code',
+        'hooks',
+        'hooks.json'
+      );
+      const cachedBootstrapCliPath = path.join(
+        homeDir,
+        '.vscode',
+        'agent-plugins',
+        'github.com',
+        'affaan-m',
+        'everything-claude-code',
+        'scripts',
+        'hooks',
+        'hook-bootstrap-cli.js'
+      );
+      const cachedPluginBootstrapPath = path.join(
+        homeDir,
+        '.vscode',
+        'agent-plugins',
+        'github.com',
+        'affaan-m',
+        'everything-claude-code',
+        'scripts',
+        'hooks',
+        'plugin-hook-bootstrap.js'
+      );
+      const cachedShellWrapperPath = path.join(
+        homeDir,
+        '.vscode',
+        'agent-plugins',
+        'github.com',
+        'affaan-m',
+        'everything-claude-code',
+        'scripts',
+        'hooks',
+        'run-with-flags-shell.sh'
+      );
+      fs.mkdirSync(path.dirname(cachedHooksPath), { recursive: true });
+      fs.writeFileSync(cachedHooksPath, JSON.stringify({
+        hooks: {
+          SessionStart: [
+            {
+              hooks: [
+                {
+                  command: 'node -e "const p=require(\'path\');const r=(()=>{})()"'
+                }
+              ]
+            }
+          ]
+        }
+      }, null, 2) + '\n');
+
+      const result = run(['--profile', 'core'], { cwd: projectDir, homeDir });
+      assert.strictEqual(result.code, 0, result.stderr);
+
+      const claudeRoot = path.join(homeDir, '.claude');
+      const cachedHooks = readJson(cachedHooksPath);
+      const sessionStartCommand = cachedHooks.hooks.SessionStart[0].hooks[0].command;
+      assert.ok(typeof sessionStartCommand === 'string');
+      assert.ok(sessionStartCommand.includes('hook-bootstrap-cli.js'));
+      assert.ok(sessionStartCommand.includes(`${claudeRoot}/scripts/hooks/hook-bootstrap-cli.js`));
+      assert.ok(!sessionStartCommand.includes('${CLAUDE_PLUGIN_ROOT}'));
+      assert.ok(!sessionStartCommand.includes('node -e "const p=require(\'path\')'));
+      assert.ok(fs.existsSync(cachedBootstrapCliPath), 'Should mirror hook-bootstrap-cli.js into existing VS Code plugin cache roots');
+      assert.ok(fs.existsSync(cachedPluginBootstrapPath), 'Should mirror plugin-hook-bootstrap.js into existing VS Code plugin cache roots');
+      assert.ok(fs.existsSync(cachedShellWrapperPath), 'Should mirror run-with-flags-shell.sh into existing VS Code plugin cache roots');
     } finally {
       cleanup(homeDir);
       cleanup(projectDir);
@@ -350,7 +436,7 @@ function runTests() {
     }
   })) passed++; else failed++;
 
-  if (test('installs claude hooks with the safe plugin bootstrap contract', () => {
+  if (test('installs claude hooks with the file-based bootstrap CLI contract', () => {
     const homeDir = createTempDir('install-apply-home-');
     const projectDir = createTempDir('install-apply-project-');
 
@@ -365,16 +451,12 @@ function runTests() {
       assert.ok(installedBashDispatcherEntry, 'hooks/hooks.json should include the consolidated Bash dispatcher hook');
       assert.strictEqual(typeof installedBashDispatcherEntry.hooks[0].command, 'string', 'hooks/hooks.json should install string-form commands for Claude Code schema compatibility');
       assert.ok(
-        installedBashDispatcherEntry.hooks[0].command.startsWith('node -e '),
-        'hooks/hooks.json should use the inline node bootstrap contract'
+        installedBashDispatcherEntry.hooks[0].command.startsWith(`node ${claudeRoot}/scripts/hooks/hook-bootstrap-cli.js `),
+        'hooks/hooks.json should use the file-based bootstrap CLI contract'
       );
       assert.ok(
-        installedBashDispatcherEntry.hooks[0].command.includes('plugin-hook-bootstrap.js'),
-        'hooks/hooks.json should route plugin-managed hooks through the shared bootstrap'
-      );
-      assert.ok(
-        installedBashDispatcherEntry.hooks[0].command.includes('CLAUDE_PLUGIN_ROOT'),
-        'hooks/hooks.json should still consult CLAUDE_PLUGIN_ROOT for runtime resolution'
+        installedBashDispatcherEntry.hooks[0].command.includes('hook-bootstrap-cli.js'),
+        'hooks/hooks.json should route managed hooks through the shared bootstrap CLI'
       );
       assert.ok(
         installedBashDispatcherEntry.hooks[0].command.includes('pre-bash-dispatcher.js'),

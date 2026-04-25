@@ -156,7 +156,7 @@ function runHookCommand(command, input = {}, env = {}, timeoutMs = 10000) {
     );
 
     const inlineNodeMatch = resolvedCommand.match(/^node -e "((?:[^"\\]|\\.)*)"(?:\s+(.*))?$/s);
-    const fileNodeMatch = resolvedCommand.match(/^node\s+"([^"]+)"\s*(.*)$/);
+    const fileNodeMatch = resolvedCommand.match(/^node\s+(?:"([^"]+)"|(\S+))\s*(.*)$/);
     const useDirectNodeSpawn = Boolean(inlineNodeMatch || fileNodeMatch);
     const shell = isWindows ? 'cmd' : 'bash';
     const shellArgs = isWindows ? ['/d', '/s', '/c', resolvedCommand] : ['-lc', resolvedCommand];
@@ -169,10 +169,17 @@ function runHookCommand(command, input = {}, env = {}, timeoutMs = 10000) {
       .replace(/\\"/g, '"')
       .replace(/\\n/g, '\n')
       .replace(/\\t/g, '\t');
+    const normalizeNodeScriptPath = scriptPath => {
+      if (!scriptPath || !scriptPath.startsWith('~/')) {
+        return scriptPath;
+      }
+      const homeDir = mergedEnv.HOME || mergedEnv.USERPROFILE || os.homedir();
+      return path.join(homeDir, scriptPath.slice(2));
+    };
     const nodeArgs = inlineNodeMatch
       ? ['-e', unescapeInlineJs(inlineNodeMatch[1]), ...splitArgs(inlineNodeMatch[2])]
       : fileNodeMatch
-        ? [fileNodeMatch[1], ...splitArgs(fileNodeMatch[2])]
+        ? [normalizeNodeScriptPath(fileNodeMatch[1] || fileNodeMatch[2]), ...splitArgs(fileNodeMatch[3])]
         : [];
 
     const proc = useDirectNodeSpawn
@@ -686,14 +693,22 @@ async function runTests() {
     const lines = [
       JSON.stringify({ type: 'user', content: 'Fix the login bug' }),
       JSON.stringify({ type: 'tool_use', name: 'Read', input: { file_path: 'src/auth.ts' } }),
-      JSON.stringify({ type: 'assistant', message: { content: [
-        { type: 'tool_use', name: 'Edit', input: { file_path: 'src/auth.ts' } }
-      ]}}),
+      JSON.stringify({
+        type: 'assistant', message: {
+          content: [
+            { type: 'tool_use', name: 'Edit', input: { file_path: 'src/auth.ts' } }
+          ]
+        }
+      }),
       JSON.stringify({ type: 'user', content: 'Now add tests' }),
-      JSON.stringify({ type: 'assistant', message: { content: [
-        { type: 'tool_use', name: 'Write', input: { file_path: 'tests/auth.test.ts' } },
-        { type: 'text', text: 'Here are the tests' }
-      ]}}),
+      JSON.stringify({
+        type: 'assistant', message: {
+          content: [
+            { type: 'tool_use', name: 'Write', input: { file_path: 'tests/auth.test.ts' } },
+            { type: 'text', text: 'Here are the tests' }
+          ]
+        }
+      }),
       JSON.stringify({ type: 'user', content: 'Looks good, commit' })
     ];
     fs.writeFileSync(transcriptPath, lines.join('\n'));
@@ -759,13 +774,21 @@ async function runTests() {
 
     // Claude Code JSONL format uses nested message.content arrays
     const lines = [
-      JSON.stringify({ type: 'user', message: { role: 'user', content: [
-        { type: 'text', text: 'Refactor the utils module' }
-      ]}}),
-      JSON.stringify({ type: 'assistant', message: { content: [
-        { type: 'tool_use', name: 'Read', input: { file_path: 'lib/utils.js' } }
-      ]}}),
-      JSON.stringify({ type: 'user', message: { role: 'user', content: 'Approve the changes' }})
+      JSON.stringify({
+        type: 'user', message: {
+          role: 'user', content: [
+            { type: 'text', text: 'Refactor the utils module' }
+          ]
+        }
+      }),
+      JSON.stringify({
+        type: 'assistant', message: {
+          content: [
+            { type: 'tool_use', name: 'Read', input: { file_path: 'lib/utils.js' } }
+          ]
+        }
+      }),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'Approve the changes' } })
     ];
     fs.writeFileSync(transcriptPath, lines.join('\n'));
 
@@ -846,8 +869,8 @@ async function runTests() {
 
     let code = null;
     // MUST drain stdout/stderr to prevent backpressure blocking the child process
-    proc.stdout.on('data', () => {});
-    proc.stderr.on('data', () => {});
+    proc.stdout.on('data', () => { });
+    proc.stderr.on('data', () => { });
     proc.stdin.on('error', (err) => {
       if (err.code !== 'EPIPE' && err.code !== 'EOF') throw err;
     });
@@ -871,7 +894,7 @@ async function runTests() {
     let code = null;
     let stderr = '';
     // MUST drain stdout to prevent backpressure blocking the child process
-    proc.stdout.on('data', () => {});
+    proc.stdout.on('data', () => { });
     proc.stderr.on('data', data => stderr += data);
     proc.stdin.on('error', (err) => {
       if (err.code !== 'EPIPE' && err.code !== 'EOF') throw err;
@@ -943,7 +966,9 @@ async function runTests() {
       commandText.startsWith('node -e');
     const isNodeScript =
       (Array.isArray(command) && command[0] === 'node' && typeof command[1] === 'string' && command[1].endsWith('.js')) ||
-      commandText.startsWith('node "');
+      commandText.startsWith('node "') ||
+      commandText.startsWith('node ~/.claude/scripts/hooks/hook-bootstrap-cli.js ') ||
+      commandText.startsWith('node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/hook-bootstrap-cli.js ');
     const isShellWrapper =
       (Array.isArray(command) && (command[0] === 'bash' || command[0] === 'sh')) ||
       commandText.startsWith('bash "') ||
@@ -952,7 +977,7 @@ async function runTests() {
       commandText.startsWith('sh -c ');
     assert.ok(
       isNodeInline || isNodeScript || isShellWrapper,
-      `Async hook command should be runnable (node -e, node script, or shell wrapper), got: ${commandText.substring(0, 80)}`
+      `Async hook command should be runnable (node -e, node script/bootstrap-cli, or shell wrapper), got: ${commandText.substring(0, 80)}`
     );
   })) passed++; else failed++;
 
@@ -971,7 +996,9 @@ async function runTests() {
             commandText.startsWith('node -e');
           const isFilePath =
             (Array.isArray(command) && command[0] === 'node' && typeof command[1] === 'string' && command[1].endsWith('.js')) ||
-            commandText.startsWith('node "');
+            commandText.startsWith('node "') ||
+            commandText.startsWith('node ~/.claude/scripts/hooks/hook-bootstrap-cli.js ') ||
+            commandText.startsWith('node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/hook-bootstrap-cli.js ');
           const isNpx = (Array.isArray(command) && command[0] === 'npx') || commandText.startsWith('npx ');
           const isShellWrapper =
             (Array.isArray(command) && (command[0] === 'bash' || command[0] === 'sh')) ||
@@ -985,7 +1012,7 @@ async function runTests() {
 
           assert.ok(
             isInline || isFilePath || isNpx || isShellWrapper || isShellScriptPath,
-            `Hook command in ${hookType} should be node -e, node script, npx, or shell wrapper/script, got: ${commandText.substring(0, 80)}`
+            `Hook command in ${hookType} should be node -e, node script/bootstrap-cli, npx, or shell wrapper/script, got: ${commandText.substring(0, 80)}`
           );
         }
       }

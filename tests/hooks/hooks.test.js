@@ -1983,7 +1983,7 @@ async function runTests() {
   else failed++;
 
   if (
-    test('SessionStart hook uses safe inline resolver without plugin-tree scanning', () => {
+    test('SessionStart hook uses file-based bootstrap CLI', () => {
       const hooksPath = path.join(__dirname, '..', '..', 'hooks', 'hooks.json');
       const hooks = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
       const sessionStartHook = hooks.hooks.SessionStart?.[0]?.hooks?.[0];
@@ -1995,8 +1995,8 @@ async function runTests() {
         commandText.includes('session-start-bootstrap.js'),
         'SessionStart should delegate to the extracted bootstrap script'
       );
-      assert.ok(commandText.includes('CLAUDE_PLUGIN_ROOT'), 'SessionStart should use CLAUDE_PLUGIN_ROOT');
-      assert.ok(!commandText.includes('${CLAUDE_PLUGIN_ROOT}'), 'SessionStart should not depend on raw shell placeholder expansion');
+      assert.ok(commandText.includes('hook-bootstrap-cli.js'), 'SessionStart should route through hook-bootstrap-cli.js');
+      assert.ok(commandText.includes('${CLAUDE_PLUGIN_ROOT}'), 'SessionStart should use CLAUDE_PLUGIN_ROOT for cross-platform bootstrap path resolution');
       assert.ok(!commandText.includes('find '), 'Should not scan arbitrary plugin paths with find');
       assert.ok(!commandText.includes('head -n 1'), 'Should not pick the first matching plugin path');
 
@@ -2013,7 +2013,7 @@ async function runTests() {
     passed++;
   else failed++;
   if (
-    test('Stop and SessionEnd hooks use the safe inline resolver when plugin root may be unset', () => {
+    test('Stop and SessionEnd hooks use the file-based bootstrap CLI', () => {
       const hooksPath = path.join(__dirname, '..', '..', 'hooks', 'hooks.json');
       const hooks = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
       const stopHooks = (hooks.hooks.Stop || []).flatMap(entry => entry.hooks || []);
@@ -2022,23 +2022,19 @@ async function runTests() {
       for (const hook of [...stopHooks, ...sessionEndHooks]) {
         const commandText = Array.isArray(hook.command) ? hook.command.join(' ') : hook.command;
         assert.ok(
-          (Array.isArray(hook.command) && hook.command[0] === 'node' && hook.command[1] === '-e') ||
-          (typeof hook.command === 'string' && hook.command.startsWith('node -e "')),
-          'Lifecycle hook should use inline node resolver'
+          typeof hook.command === 'string' && commandText.startsWith('node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/hook-bootstrap-cli.js '),
+          'Lifecycle hook should use the file-based bootstrap CLI'
         );
         assert.ok(commandText.includes('run-with-flags.js'), 'Lifecycle hook should resolve the runner script');
-        assert.ok(commandText.includes('CLAUDE_PLUGIN_ROOT'), 'Lifecycle hook should consult CLAUDE_PLUGIN_ROOT');
-        assert.ok(!commandText.includes('${CLAUDE_PLUGIN_ROOT}'), 'Lifecycle hook should not depend on raw shell placeholder expansion');
-        assert.ok(commandText.includes('plugins'), 'Lifecycle hook should probe known plugin roots');
-        assert.ok(!commandText.includes('find '), 'Lifecycle hook should not scan arbitrary plugin paths with find');
-        assert.ok(!commandText.includes('head -n 1'), 'Lifecycle hook should not pick the first matching plugin path');
+        assert.ok(commandText.includes('hook-bootstrap-cli.js'), 'Lifecycle hook should route through hook-bootstrap-cli.js');
+        assert.ok(commandText.includes('${CLAUDE_PLUGIN_ROOT}'), 'Lifecycle hook should use CLAUDE_PLUGIN_ROOT for cross-platform bootstrap path resolution');
       }
     })
   )
     passed++;
   else failed++;
   if (
-    test('script references use the safe inline resolver or plugin bootstrap', () => {
+    test('script references use the bootstrap CLI contract', () => {
       const hooksPath = path.join(__dirname, '..', '..', 'hooks', 'hooks.json');
       const hooks = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
 
@@ -2048,12 +2044,11 @@ async function runTests() {
             const commandText = Array.isArray(hook.command) ? hook.command.join(' ') : hook.command;
             const commandStart = Array.isArray(hook.command) ? `${hook.command[0]} ${hook.command[1] || ''}`.trim() : hook.command;
             if (hook.type === 'command' && commandText.includes('scripts/hooks/')) {
-              const usesInlineResolver = commandStart.startsWith('node -e') && commandText.includes('run-with-flags.js');
-              const usesPluginBootstrap = commandStart.startsWith('node -e') && commandText.includes('plugin-hook-bootstrap.js');
-              assert.ok(!commandText.includes('${CLAUDE_PLUGIN_ROOT}'), `Script paths should not depend on raw shell placeholder expansion: ${commandText.substring(0, 80)}...`);
+              const usesBootstrapCli = commandStart.startsWith('node ${CLAUDE_PLUGIN_ROOT}/scripts/hooks/hook-bootstrap-cli.js');
+              assert.ok(commandText.includes('${CLAUDE_PLUGIN_ROOT}'), `Script paths should keep CLAUDE_PLUGIN_ROOT placeholder for cross-platform resolution: ${commandText.substring(0, 80)}...`);
               assert.ok(
-                usesInlineResolver || usesPluginBootstrap,
-                `Script paths should use the inline resolver or plugin bootstrap: ${commandText.substring(0, 80)}...`
+                usesBootstrapCli,
+                `Script paths should use the bootstrap CLI contract: ${commandText.substring(0, 80)}...`
               );
             }
           }
